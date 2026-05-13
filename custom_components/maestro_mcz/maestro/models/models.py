@@ -1106,15 +1106,7 @@ supported_binary_sensors = [
         EntityCategory.DIAGNOSTIC,
         BinarySensorDeviceClass.PROBLEM,
         True,
-    ),
-    BinarySensorMczConfigItem(
-        "Device Connection Status",
-        "is_connected",
-        "mdi:connection",
-        EntityCategory.DIAGNOSTIC,
-        BinarySensorDeviceClass.CONNECTIVITY,
-        True,
-    ),
+    )
 ]
 
 supported_sensors = [

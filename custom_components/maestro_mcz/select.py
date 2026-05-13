@@ -5,11 +5,11 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import MczDeviceCoordinator
+from . import MczAccountCoordinator
+from .maestro import MaestroStove
 from .maestro.controller.responses.model import SensorConfiguration
 from .maestro.models import models
 from .maestro.types.enums import SensorTypeEnum
@@ -24,21 +24,24 @@ class MczSelectEntity(CoordinatorEntity, SelectEntity):
 
     def __init__(
         self,
-        coordinator: MczDeviceCoordinator,
+        coordinator: MczAccountCoordinator,
+        stove_unique_code: str,
         supported_selector: models.SelectMczConfigItem,
         matching_selector_configuration: SensorConfiguration,
     ) -> None:
         """Initialize the select entity."""
         super().__init__(coordinator)
-        self.coordinator: MczDeviceCoordinator = coordinator
+        self.coordinator: MczAccountCoordinator = coordinator
+        self._stove: MaestroStove = coordinator.stoves[stove_unique_code]
         self._attr_name = supported_selector.user_friendly_name
         self._attr_unique_id = (
-            f"{self.coordinator.stove.UniqueCode}-{supported_selector.sensor_get_name}"
+            f"{stove_unique_code}-{supported_selector.sensor_get_name}"
         )
         self._attr_icon = supported_selector.icon
+        self._attr_device_info = self._stove.get_device_info()
         self._prop = supported_selector.sensor_get_name
-        self._enabled_default = supported_selector.enabled_by_default
-        self._category = supported_selector.category
+        self.entity_registry_enabled_default = supported_selector.enabled_by_default
+        self.entity_category = supported_selector.category
         self._selector_configuration = matching_selector_configuration
 
         if (
@@ -83,8 +86,13 @@ class MczSelectEntity(CoordinatorEntity, SelectEntity):
         self._handle_coordinator_update_internal()  # getting the initial update directly without delay
 
     @property
-    def device_info(self) -> DeviceInfo:
-        return self.coordinator.get_device_info()
+    def available(self) -> bool:
+        """Check availability based on coordinator and stove connection."""
+        # Check 1: coordinator is available
+        if not super().available:
+            return False
+        # Check 2: is the stove connected
+        return self._stove.is_connected
 
     @property
     def current_option(self):
@@ -109,20 +117,12 @@ class MczSelectEntity(CoordinatorEntity, SelectEntity):
                 found_value = option
 
             if found_value is not None:
-                await self.coordinator.stove.activateProgram(
+                await self._stove.activateProgram(
                     self._selector_configuration.configuration.sensor_id,
                     self._selector_configuration.configuration_id,
                     int(found_value),
                 )
                 await self.coordinator.update_data_after_set()
-
-    @property
-    def entity_registry_enabled_default(self) -> bool:
-        return self._enabled_default
-
-    @property
-    def entity_category(self):
-        return self._category
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -131,10 +131,10 @@ class MczSelectEntity(CoordinatorEntity, SelectEntity):
 
     def _handle_coordinator_update_internal(self) -> None:
         current_value = None
-        if hasattr(self.coordinator.stove.Status, self._prop):
-            current_value = str(getattr(self.coordinator.stove.Status, self._prop))
-        elif hasattr(self.coordinator.stove.State, self._prop):
-            current_value = str(getattr(self.coordinator.stove.State, self._prop))
+        if hasattr(self._stove.Status, self._prop):
+            current_value = str(getattr(self._stove.Status, self._prop))
+        elif hasattr(self._stove.State, self._prop):
+            current_value = str(getattr(self._stove.State, self._prop))
 
         if self._selector_configuration.configuration.type == SensorTypeEnum.INT.value:
             if current_value and self._selector_configuration is not None:
@@ -159,34 +159,42 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up select entities from a config entry."""
-    coordinators = entry.runtime_data
+    coordinator: MczAccountCoordinator = entry.runtime_data
     entities = []
-    for coordinator in coordinators.values():
-        entities.extend(_getStoveSelectEntities(coordinator))
+    for stove in coordinator.stoves.values():
+        entities.extend(_getStoveSelectEntities(coordinator, stove))
     async_add_entities(entities)
 
 
 def _getStoveSelectEntities(
-    coordinator: MczDeviceCoordinator,
+    coordinator: MczAccountCoordinator,
+    stove: MaestroStove,
 ) -> list[CoordinatorEntity]:
     """Get the select entities to create for this stove."""
     entities = []
-    supported_pots = coordinator.stove.get_all_matching_sensor_configurations_by_model_configuration_name_and_sensor_name(
+    supported_pots = stove.get_all_matching_sensor_configurations_by_model_configuration_name_and_sensor_name(
         models.supported_pots
     )
     if supported_pots is not None:
         entities.extend(
-            MczSelectEntity(coordinator, supported_pot[0], supported_pot[1])
+            MczSelectEntity(
+                coordinator, stove.UniqueCode, supported_pot[0], supported_pot[1]
+            )
             for supported_pot in supported_pots
             if supported_pot[0] is not None and supported_pot[1] is not None
         )
 
-    supported_selectors = coordinator.stove.get_all_matching_sensor_configurations_by_model_configuration_name_and_sensor_name(
+    supported_selectors = stove.get_all_matching_sensor_configurations_by_model_configuration_name_and_sensor_name(
         models.supported_selectors
     )
     if supported_selectors is not None:
         entities.extend(
-            MczSelectEntity(coordinator, supported_selector[0], supported_selector[1])
+            MczSelectEntity(
+                coordinator,
+                stove.UniqueCode,
+                supported_selector[0],
+                supported_selector[1],
+            )
             for supported_selector in supported_selectors
             if supported_selector[0] is not None and supported_selector[1] is not None
         )

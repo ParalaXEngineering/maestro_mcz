@@ -11,11 +11,11 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import MczDeviceCoordinator
+from . import MczAccountCoordinator
+from .maestro import MaestroStove
 from .maestro.controller.responses.model import SensorConfiguration
 from .maestro.models import models
 from .maestro.types.enums import SensorTypeEnum
@@ -44,25 +44,28 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
 
     def __init__(
         self,
-        coordinator: MczDeviceCoordinator,
+        coordinator: MczAccountCoordinator,
+        stove_unique_code: str,
         supported_power_sensor: models.PowerSettingMczConfigItem,
         matching_power_configuration: SensorConfiguration,
     ) -> None:
         """Initialize the climate entity."""
         super().__init__(coordinator)
-        self.coordinator: MczDeviceCoordinator = coordinator
+        self.coordinator: MczAccountCoordinator = coordinator
+        self._stove: MaestroStove = coordinator.stoves[stove_unique_code]
 
         # general
         self._attr_name = None
-        self._attr_unique_id = f"{self.coordinator.stove.UniqueCode}"
+        self._attr_unique_id = f"{stove_unique_code}"
         self._attr_icon = "mdi:stove"
+        self._attr_device_info = self._stove.get_device_info()
 
         # set power on/off config
         self._supported_power_sensor = supported_power_sensor
         self._set_power_configuration(matching_power_configuration)
 
         # set thermostat config
-        first_supported_thermostat = coordinator.stove.get_first_matching_sensor_configuration_by_model_configuration_name_and_sensor_name(
+        first_supported_thermostat = self._stove.get_first_matching_sensor_configuration_by_model_configuration_name_and_sensor_name(
             models.supported_thermostats
         )
         if (
@@ -71,10 +74,14 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
             and first_supported_thermostat[1] is not None
         ):
             self._supported_thermostat = first_supported_thermostat[0]
+            self.entity_registry_enabled_default = (
+                self._supported_thermostat.enabled_by_default
+            )
+            self.entity_category = self._supported_thermostat.category
             self._set_thermostat_configuration(first_supported_thermostat[1])
 
         # set preset/mode config
-        first_supported_climate_function_mode = coordinator.stove.get_first_matching_sensor_configuration_by_model_configuration_name_and_sensor_name(
+        first_supported_climate_function_mode = self._stove.get_first_matching_sensor_configuration_by_model_configuration_name_and_sensor_name(
             models.supported_climate_function_modes
         )
         if (
@@ -93,8 +100,13 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
         self._handle_coordinator_update_internal()
 
     @property
-    def device_info(self) -> DeviceInfo:
-        return self.coordinator.get_device_info()
+    def available(self) -> bool:
+        """Check availability based on coordinator and stove connection."""
+        # Check 1: coordinator is available
+        if not super().available:
+            return False
+        # Check 2: is the stove connected
+        return self._stove.is_connected
 
     @property
     def hvac_mode(self):
@@ -206,7 +218,7 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
                 and preset_mode in self._attr_preset_modes_mappings
             ):
                 converted_preset_mode = self._attr_preset_modes_mappings[preset_mode]
-                await self.coordinator.stove.activateProgram(
+                await self._stove.activateProgram(
                     self._climate_function_mode_configuration.configuration.sensor_id,
                     self._climate_function_mode_configuration.configuration_id,
                     converted_preset_mode,
@@ -223,7 +235,7 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
                     self._power_configuration.configuration.type
                     == SensorTypeEnum.BOOLEAN.value
                 ):
-                    await self.coordinator.stove.activateProgram(
+                    await self._stove.activateProgram(
                         self._power_configuration.configuration.sensor_id,
                         self._power_configuration.configuration_id,
                         True,
@@ -237,7 +249,7 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
                         self._attr_hvac_modes_mappings
                         and hvac_mode in self._attr_hvac_modes_mappings
                     ):
-                        await self.coordinator.stove.activateProgram(
+                        await self._stove.activateProgram(
                             self._power_configuration.configuration.sensor_id,
                             self._power_configuration.configuration_id,
                             int(self._attr_hvac_modes_mappings[hvac_mode]),
@@ -247,7 +259,7 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
     async def async_set_temperature(self, **kwargs):
         """Set the climate temperature."""
         if self._thermostat_configuration is not None:
-            await self.coordinator.stove.activateProgram(
+            await self._stove.activateProgram(
                 self._thermostat_configuration.configuration.sensor_id,
                 self._thermostat_configuration.configuration_id,
                 float(kwargs["temperature"]),
@@ -262,16 +274,16 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
     def _handle_coordinator_update_internal(self) -> None:
         # HVAC mode
         if self._supported_power_sensor is not None and hasattr(
-            self.coordinator.stove.Status,
+            self._stove.Status,
             self._supported_power_sensor.sensor_get_name,
         ):
             stato_stufa = getattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_power_sensor.sensor_get_name,
             )
 
             fase_op = getattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_power_sensor.fase_sensor_get_name,
             )
 
@@ -351,18 +363,16 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
             self._attr_hvac_action = None
 
         # current temp
-        if hasattr(self.coordinator.stove.State, "temp_amb_install"):
-            self._attr_current_temperature = (
-                self.coordinator.stove.State.temp_amb_install
-            )
+        if hasattr(self._stove.State, "temp_amb_install"):
+            self._attr_current_temperature = self._stove.State.temp_amb_install
 
         # target temp
         if self._supported_thermostat is not None and hasattr(
-            self.coordinator.stove.State,
+            self._stove.State,
             self._supported_thermostat.sensor_get_name,
         ):
             self._attr_target_temperature = getattr(
-                self.coordinator.stove.State,
+                self._stove.State,
                 self._supported_thermostat.sensor_get_name,
             )
         else:
@@ -370,11 +380,11 @@ class MczClimateEntity(CoordinatorEntity, ClimateEntity):
 
         # preset modes
         if self._supported_climate_function_mode is not None and hasattr(
-            self.coordinator.stove.State,
+            self._stove.State,
             self._supported_climate_function_mode.sensor_get_name,
         ):
             preset_mode_value_raw = getattr(
-                self.coordinator.stove.State,
+                self._stove.State,
                 self._supported_climate_function_mode.sensor_get_name,
             )
             if preset_mode_value_raw is not None:
@@ -402,19 +412,19 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up climate entities from a config entry."""
-    coordinators = entry.runtime_data
+    coordinator: MczAccountCoordinator = entry.runtime_data
     entities = []
-    for coordinator in coordinators.values():
-        entities.extend(_getStoveClimateEntities(coordinator))
+    for stove in coordinator.stoves.values():
+        entities.extend(_getStoveClimateEntities(coordinator, stove))
     async_add_entities(entities)
 
 
 def _getStoveClimateEntities(
-    coordinator: MczDeviceCoordinator,
+    coordinator: MczAccountCoordinator, stove: MaestroStove
 ) -> list[CoordinatorEntity]:
     """Get the climate entities to create for this stove."""
     entities = []
-    first_supported_power_sensor = coordinator.stove.get_first_matching_sensor_configuration_by_model_configuration_name_and_sensor_name(
+    first_supported_power_sensor = stove.get_first_matching_sensor_configuration_by_model_configuration_name_and_sensor_name(
         models.supported_power_settings
     )
     if (
@@ -425,6 +435,7 @@ def _getStoveClimateEntities(
         entities.append(
             MczClimateEntity(
                 coordinator,
+                stove.UniqueCode,
                 first_supported_power_sensor[0],
                 first_supported_power_sensor[1],
             )

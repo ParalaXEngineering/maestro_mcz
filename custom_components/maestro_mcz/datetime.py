@@ -7,12 +7,12 @@ from datetime import datetime
 from homeassistant.components.datetime import DateTimeEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 import homeassistant.util.dt as dt_util
 
-from . import MczDeviceCoordinator
+from . import MczAccountCoordinator
+from .maestro import MaestroStove
 from .maestro.controller.requests.activate_program import ProgramCommand
 from .maestro.controller.responses.model import SensorConfiguration
 from .maestro.models import models
@@ -41,21 +41,24 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
 
     def __init__(
         self,
-        coordinator: MczDeviceCoordinator,
+        coordinator: MczAccountCoordinator,
+        stove_unique_code: str,
         supported_date_time: models.DateTimeMczConfigItem,
         matching_date_time_configuration: SensorConfiguration,
     ) -> None:
         """Initialize the date/time entity."""
         super().__init__(coordinator)
-        self.coordinator: MczDeviceCoordinator = coordinator
+        self.coordinator: MczAccountCoordinator = coordinator
+        self._stove: MaestroStove = coordinator.stoves[stove_unique_code]
         self._attr_name = supported_date_time.user_friendly_name
         self._attr_unique_id = (
-            f"{self.coordinator.stove.UniqueCode}-{supported_date_time.sensor_set_name}"
+            f"{stove_unique_code}-{supported_date_time.sensor_set_name}"
         )
         self._attr_icon = supported_date_time.icon
+        self._attr_device_info = self._stove.get_device_info()
         self._prop = supported_date_time.sensor_set_name
-        self._enabled_default = supported_date_time.enabled_by_default
-        self._category = supported_date_time.category
+        self.entity_registry_enabled_default = supported_date_time.enabled_by_default
+        self.entity_category = supported_date_time.category
 
         self._supported_date_time_sensor = supported_date_time
         self.set_date_time_configuration(matching_date_time_configuration)
@@ -63,16 +66,13 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
         self._handle_coordinator_update_internal()  # getting the initial update directly without delay
 
     @property
-    def device_info(self) -> DeviceInfo:
-        return self.coordinator.get_device_info()
-
-    @property
-    def entity_registry_enabled_default(self) -> bool:
-        return self._enabled_default
-
-    @property
-    def entity_category(self):
-        return self._category
+    def available(self) -> bool:
+        """Check availability based on coordinator and stove connection."""
+        # Check 1: coordinator is available
+        if not super().available:
+            return False
+        # Check 2: is the stove connected
+        return self._stove.is_connected
 
     @property
     def native_value(self) -> datetime | None:
@@ -94,7 +94,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
         if self._supported_date_time_sensor.sensor_set_config_name is not None:
             # set weekday config
             if self._supported_date_time_sensor.sensor_set_name is not None:
-                supported_sensor_weekday = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_weekday = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_weekday,
                 )
@@ -107,7 +107,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_weekday = supported_sensor_weekday
             # set year config
             if self._supported_date_time_sensor.sensor_set_name_year is not None:
-                supported_sensor_year = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_year = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_year,
                 )
@@ -120,7 +120,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_year = supported_sensor_year
             # set month config
             if self._supported_date_time_sensor.sensor_set_name_month is not None:
-                supported_sensor_month = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_month = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_month,
                 )
@@ -133,7 +133,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_month = supported_sensor_month
             # set day config
             if self._supported_date_time_sensor.sensor_set_name_day is not None:
-                supported_sensor_day = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_day = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_day,
                 )
@@ -146,7 +146,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_day = supported_sensor_day
             # set hour config
             if self._supported_date_time_sensor.sensor_set_name_hour is not None:
-                supported_sensor_hour = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_hour = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_hour,
                 )
@@ -159,7 +159,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_hour = supported_sensor_hour
             # set minute config
             if self._supported_date_time_sensor.sensor_set_name_minute is not None:
-                supported_sensor_minute = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_minute = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_minute,
                 )
@@ -172,7 +172,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_minute = supported_sensor_minute
             # set second config
             if self._supported_date_time_sensor.sensor_set_name_second is not None:
-                supported_sensor_second = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_second = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_second,
                 )
@@ -185,7 +185,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                     self._sensor_configuration_second = supported_sensor_second
             # set am pm config
             if self._supported_date_time_sensor.sensor_set_name_am_pm is not None:
-                supported_sensor_am_pm = self.coordinator.stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
+                supported_sensor_am_pm = self._stove.get_sensor_configuration_by_model_configuration_name_and_sensor_name(
                     self._supported_date_time_sensor.sensor_set_config_name,
                     self._supported_date_time_sensor.sensor_set_name_am_pm,
                 )
@@ -292,7 +292,7 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
                         )
                     )
 
-                await self.coordinator.stove.activateProgramMultipleCommands(
+                await self._stove.activateProgramMultipleCommands(
                     self._date_time_configuration.configuration_id, list_of_commands
                 )
 
@@ -316,67 +316,67 @@ class MczDateTimeEntity(CoordinatorEntity, DateTimeEntity):
 
         if self._supported_date_time_sensor is not None:
             if self._sensor_configuration_weekday is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_weekday,
             ):
                 weekday = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_weekday,
                 )
             if self._sensor_configuration_year is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_year,
             ):
                 year = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_year,
                 )
             if self._sensor_configuration_month is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_month,
             ):
                 month = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_month,
                 )
             if self._sensor_configuration_day is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_day,
             ):
                 day = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_day,
                 )
             if self._sensor_configuration_hour is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_hour,
             ):
                 hour = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_hour,
                 )
             if self._sensor_configuration_minute is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_minute,
             ):
                 minute = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_minute,
                 )
             if self._sensor_configuration_second is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_second,
             ):
                 second = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_second,
                 )
             if self._sensor_configuration_am_pm is not None and hasattr(
-                self.coordinator.stove.Status,
+                self._stove.Status,
                 self._supported_date_time_sensor.sensor_get_name_am_pm,
             ):
                 am_pm = getattr(
-                    self.coordinator.stove.Status,
+                    self._stove.Status,
                     self._supported_date_time_sensor.sensor_get_name_am_pm,
                 )
 
@@ -425,24 +425,25 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up datetime entities from a config entry."""
-    coordinators = entry.runtime_data
+    coordinator: MczAccountCoordinator = entry.runtime_data
     entities = []
-    for coordinator in coordinators.values():
-        entities.extend(_getStoveDateTimeEntities(coordinator))
+    for stove in coordinator.stoves.values():
+        entities.extend(_getStoveDateTimeEntities(coordinator, stove))
     async_add_entities(entities)
 
 
 def _getStoveDateTimeEntities(
-    coordinator: MczDeviceCoordinator,
+    coordinator: MczAccountCoordinator,
+    stove: MaestroStove,
 ) -> list[CoordinatorEntity]:
     """Get the date time entities to create for this stove."""
     entities = []
-    supported_date_times = coordinator.stove.get_all_matching_sensor_configurations_by_model_configuration_name_and_sensor_name(
+    supported_date_times = stove.get_all_matching_sensor_configurations_by_model_configuration_name_and_sensor_name(
         models.supported_date_times
     )
     if supported_date_times is not None:
         entities.extend(
-            MczDateTimeEntity(coordinator, dt[0], dt[1])
+            MczDateTimeEntity(coordinator, stove.UniqueCode, dt[0], dt[1])
             for dt in supported_date_times
             if dt[0] is not None and dt[1] is not None
         )
