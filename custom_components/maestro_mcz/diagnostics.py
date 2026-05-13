@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
-from . import MczDeviceCoordinator
+from . import MczAccountCoordinator
 
 CONFIG_FIELDS_TO_REDACT = [CONF_USERNAME, CONF_PASSWORD]
 DATA_FIELDS_TO_REDACT = ["UniqueCode", "sm_sn", "ssid_wifi", "pwd_wifi", "mac_wifi"]
@@ -21,7 +21,7 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinators: dict[str, MczDeviceCoordinator] = config_entry.runtime_data
+    coordinator: MczAccountCoordinator = config_entry.runtime_data
 
     diagnostics_data = {
         "config_entry_data": async_redact_data(
@@ -31,18 +31,18 @@ async def async_get_config_entry_diagnostics(
         "options": async_redact_data(config_entry.options, OPTION_FIELDS_TO_REDACT),
     }
 
-    for coordinator in coordinators.values():
-        diagnostics_data["devices"][coordinator.stove.Name] = async_redact_data(
+    for stove in coordinator.stoves.values():
+        diagnostics_data["devices"][stove.Name] = async_redact_data(
             {
                 "coordinator.stove_data": {
-                    "Id": coordinator.stove.Id,
-                    "ModelId": coordinator.stove.ModelId,
-                    "SensorSetTypeId": coordinator.stove.SensorSetTypeId,
-                    "Name": coordinator.stove.Name,
-                    "UniqueCode": coordinator.stove.UniqueCode,
-                    "State": dataclasses.asdict(coordinator.stove.State),
-                    "Status": dataclasses.asdict(coordinator.stove.Status),
-                    "Model": dataclasses.asdict(coordinator.stove.Model),
+                    "Id": stove.Id,
+                    "ModelId": stove.ModelId,
+                    "SensorSetTypeId": stove.SensorSetTypeId,
+                    "Name": stove.Name,
+                    "UniqueCode": stove.UniqueCode,
+                    "State": dataclasses.asdict(stove.State),
+                    "Status": dataclasses.asdict(stove.Status),
+                    "Model": dataclasses.asdict(stove.Model),
                 },
             },
             DATA_FIELDS_TO_REDACT,

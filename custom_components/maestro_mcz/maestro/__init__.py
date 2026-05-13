@@ -2,6 +2,9 @@
 
 import asyncio
 
+from homeassistant.helpers.entity import DeviceInfo
+
+from ..const import DOMAIN, MANUFACTURER
 from .controller.controller_interface import MaestroControllerInterface
 from .controller.maestro_controller import (
     MaestroAuthenticationException,
@@ -32,16 +35,29 @@ class MaestroStove:
         self._model = None
         self._state = None
         self._status = None
-        self._is_connected = False
+        self._is_integration_connected_to_cloud = False
+        self._is_stove_connected_to_cloud = False
 
-    async def AsyncInit(self) -> None:
+    async def async_init(self) -> None:
         """Async initialization to retrieve the stove model."""
         await self._getStoveModel()
 
     @property
     def is_connected(self) -> bool:
-        """Return the connection status of the stove."""
-        return self._is_connected
+        """Return the connection status of the stove (end to end)."""
+        return (
+            self.is_integration_connected_to_cloud and self.is_stove_connected_to_cloud
+        )
+
+    @property
+    def is_stove_connected_to_cloud(self) -> bool:
+        """Return the connection status of the stove to the cloud."""
+        return self._is_stove_connected_to_cloud
+
+    @property
+    def is_integration_connected_to_cloud(self) -> bool:
+        """Return the connection status of the integration to the cloud."""
+        return self._is_integration_connected_to_cloud
 
     @property
     def Id(self) -> str:
@@ -106,15 +122,20 @@ class MaestroStove:
         try:
             await self._ping()
             # if the ping is successful and we are authenticated, we can proceed to refresh the status and state
-            self._is_connected = self._controller.is_authenticated
+            self._is_integration_connected_to_cloud = self._controller.is_authenticated
         except MaestroAuthenticationException, MaestroConnectionException:
-            self._is_connected = False
+            # First set connection state before raising the exception to make sure that the state is updated
+            self._is_integration_connected_to_cloud = False
             raise
 
         calls = {self._getStoveStatus(), self._getStoveState()}
         await asyncio.gather(*calls, return_exceptions=False)
         # return_exceptions = False to raise the first exception encountered
         # flagging the update as 'failed' and marking the stove as unavailable
+
+        # setting the stove connection status to cloud
+        if self.Status is not None and self.Status.is_connected is not None:
+            self._is_stove_connected_to_cloud = self.Status.is_connected
 
     async def activateProgram(
         self,
@@ -142,6 +163,27 @@ class MaestroStove:
             self.SensorSetTypeId,
             commands,
             callback_on_success,
+        )
+
+    def get_device_info(self) -> DeviceInfo:
+        """Return device info."""
+        sw_version = ""
+
+        if self.is_connected:
+            sw_version = (
+                f"{self.Status.sm_nome_app}.{self.Status.sm_vs_app}"
+                f", Panel:{self.Status.mc_vs_app}"
+                f", DB:{self.Status.nome_banca_dati_sel}"
+            )
+        else:
+            sw_version = "Device Disconnected"
+
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.UniqueCode)},
+            name=self.Name,
+            manufacturer=MANUFACTURER,
+            model=self.Model.model_name,
+            sw_version=sw_version,
         )
 
     def get_model_configuration_by_model_configuration_name(

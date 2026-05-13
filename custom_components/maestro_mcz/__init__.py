@@ -12,12 +12,11 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platfor
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .config_flow import CONF_POLLING_INTERVAL
-from .const import DEFAULT_POLLING_INTERVAL, DOMAIN, MANUFACTURER, MOCKED_FOLDER
+from .const import DEFAULT_POLLING_INTERVAL, DOMAIN, MOCKED_FOLDER
 from .maestro import MaestroStove
 from .maestro.controller.controller_interface import MaestroControllerInterface
 from .maestro.controller.maestro_controller import (
@@ -95,17 +94,19 @@ async def async_setup_entry(
         _LOGGER.error("Connection failed: %s", exception)
         return False
 
-    # 4. Create a coordinator for each stove linked to the account
-    coordinators: dict[str, MczDeviceCoordinator] = {}
-    for stove_info in stove_infos:
-        coordinator = MczDeviceCoordinator(
-            hass, entry, MaestroStove(maestroapi, stove_info)
-        )
-        await coordinator.async_config_entry_first_refresh()
-        coordinators[stove_info.node.unique_code] = coordinator
+    # 4. Create a coordinator for the account
+    coordinator: MczAccountCoordinator = MczAccountCoordinator(
+        hass,
+        entry,
+        name=f"{CONF_USERNAME}",
+        stoves=[MaestroStove(maestroapi, stove_info) for stove_info in stove_infos]
+        if stove_infos
+        else None,
+    )
+    await coordinator.async_config_entry_first_refresh()
 
-    # 5. Store the coordinators in the entry so that they can be accessed by the platforms
-    entry.runtime_data = coordinators
+    # 5. Store the coordinator in the entry so that they can be accessed by the platforms
+    entry.runtime_data = coordinator
 
     # 6. Add an update listener to handle options updates
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -133,49 +134,60 @@ async def _has_mocked_folder() -> str | None:
     return None
 
 
-class MczDeviceCoordinator(DataUpdateCoordinator):
+class MczAccountCoordinator(DataUpdateCoordinator):
     """MCZ Coordinator."""
 
-    _stove: MaestroStove = None
+    _stoves: dict[str, MaestroStove] | None = None
 
     def __init__(
         self,
         hass: HomeAssistant,
         config_entry: ConfigEntry,
-        stove: MaestroStove,
+        name: str,
+        stoves: list[MaestroStove] | None,
     ) -> None:
         """Initialize coordinator."""
         super().__init__(
             hass=hass,
             logger=_LOGGER,
             config_entry=config_entry,
-            name=stove.Name,
+            name=name,
             update_interval=timedelta(
                 seconds=config_entry.options.get(
                     CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL
                 )
             ),
         )
-        self._stove = stove
+        self._stoves = {stove.UniqueCode: stove for stove in stoves} if stoves else None
 
     async def _async_setup(self):
         """Set up the coordinator."""
-        try:
-            return await self.stove.AsyncInit()
-        except MaestroConnectionException as err:
-            raise UpdateFailed(f"Error communicating with Maestro API: {err}") from err
+        if self._stoves is None:
+            raise UpdateFailed("No stoves found for this account.")
+        for stove in self._stoves.values():
+            try:
+                await stove.async_init()
+            except MaestroConnectionException as err:
+                raise UpdateFailed(
+                    f"Error communicating with Maestro API: {err}"
+                ) from err
 
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
+        if self._stoves is None:
+            raise UpdateFailed("No stoves found for this account.")
 
-        try:
-            return await self.stove.refresh()
-        except MaestroAuthenticationException as err:
-            # Cancels future updates & Triggers re-auth flow
-            raise ConfigEntryAuthFailed from err
-        except MaestroConnectionException as err:
-            # This marks entities as unavailable and schedules a retry
-            raise UpdateFailed(f"Error communicating with Maestro API: {err}") from err
+        for stove in self._stoves.values():
+            try:
+                await stove.refresh()
+            except MaestroAuthenticationException as err:
+                # Cancels future updates & Triggers re-auth flow
+                raise ConfigEntryAuthFailed from err
+            except MaestroConnectionException as err:
+                # This marks entities as unavailable and schedules a retry
+                raise UpdateFailed(
+                    f"Error communicating with Maestro API: {err}"
+                ) from err
 
     async def update_data_after_set(
         self,
@@ -188,27 +200,6 @@ class MczDeviceCoordinator(DataUpdateCoordinator):
         await self.async_refresh()
 
     @property
-    def stove(self) -> MaestroStove:
-        """Return the stove."""
-        return self._stove
-
-    def get_device_info(self) -> DeviceInfo:
-        """Return device info."""
-        sw_version = ""
-
-        if self.stove.Status.is_connected:
-            sw_version = (
-                f"{self.stove.Status.sm_nome_app}.{self.stove.Status.sm_vs_app}"
-                f", Panel:{self.stove.Status.mc_vs_app}"
-                f", DB:{self.stove.Status.nome_banca_dati_sel}"
-            )
-        else:
-            sw_version = "Device Disconnected"
-
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.stove.UniqueCode)},
-            name=self.stove.Name,
-            manufacturer=MANUFACTURER,
-            model=self.stove.Model.model_name,
-            sw_version=sw_version,
-        )
+    def stoves(self) -> dict[str, MaestroStove]:
+        """Return the stoves."""
+        return self._stoves
