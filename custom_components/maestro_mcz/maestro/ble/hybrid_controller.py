@@ -9,6 +9,7 @@ reset, ...) is delegated to the cloud.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -27,6 +28,9 @@ from . import registers
 from .transport import MczBleTransport
 
 _LOGGER = logging.getLogger(__name__)
+
+# Upper bound on the BLE warm-up performed during setup (see below).
+SETUP_WARMUP_TIMEOUT = 20.0
 
 
 def _overlay(target: State | Status, data: dict[str, object]) -> None:
@@ -98,9 +102,16 @@ class MaestroHybridController(MaestroControllerInterface):
     async def retrieve_linked_stove_infos(self) -> list[StoveInfo]:
         """Cloud provides the identity / stove list; BLE connect is best effort."""
         infos = await self._cloud.retrieve_linked_stove_infos()
+        # Time-boxed: this runs inside async_setup_entry, and an unreachable
+        # panel would otherwise delay Home Assistant's startup by minutes. The
+        # cloud already provides everything setup needs, so a missed warm-up
+        # costs nothing beyond a slightly later first local reading.
         try:
-            if await self._transport.ensure_connected():
-                await self._transport.cap_scan()
+            async with asyncio.timeout(SETUP_WARMUP_TIMEOUT):
+                if await self._transport.ensure_connected():
+                    await self._transport.cap_scan()
+        except TimeoutError:
+            _LOGGER.debug("BLE warm-up during setup timed out; continuing on cloud")
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("BLE warm-up during setup failed: %s", err)
         return infos

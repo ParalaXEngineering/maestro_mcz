@@ -8,6 +8,7 @@ the model instead comes from the cloud; see :mod:`.hybrid_controller`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -26,6 +27,10 @@ _LOGGER = logging.getLogger(__name__)
 
 BLE_MODEL_ID = "ble-local"
 BLE_SENSOR_SET_TYPE_ID = "ble"
+
+# Upper bound on the connect + capability scan + first poll performed during
+# setup, so a silent panel cannot stall Home Assistant's startup.
+SETUP_WARMUP_TIMEOUT = 25.0
 
 
 def _mac_slug(address: str) -> str:
@@ -198,11 +203,25 @@ class MaestroBleController(MaestroControllerInterface):
         }
 
     async def retrieve_linked_stove_infos(self) -> list[StoveInfo]:
-        """Return a single :class:`StoveInfo` for the local panel."""
-        connected = await self._transport.ensure_connected()
-        if connected:
-            await self._transport.cap_scan()
-            await self._transport.poll_status_block()
+        """Return a single :class:`StoveInfo` for the local panel.
+
+        The warm-up is time-boxed: this runs inside ``async_setup_entry``, and a
+        panel that is out of range or refusing connections would otherwise hold
+        up Home Assistant's startup for minutes (the connector alone retries
+        eleven times, and each unanswered register read costs its full timeout).
+        Whatever is missing here is filled in by the next coordinator refresh.
+        """
+        try:
+            async with asyncio.timeout(SETUP_WARMUP_TIMEOUT):
+                if await self._transport.ensure_connected():
+                    await self._transport.cap_scan()
+                    await self._transport.poll_status_block()
+        except TimeoutError:
+            _LOGGER.debug(
+                "BLE warm-up for %s exceeded %ss; continuing with what was read",
+                self._address,
+                SETUP_WARMUP_TIMEOUT,
+            )
 
         serial = self._transport.serial
         slug = _mac_slug(self._address)
