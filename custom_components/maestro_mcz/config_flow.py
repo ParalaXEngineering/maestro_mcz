@@ -27,8 +27,11 @@ from homeassistant.helpers.device_registry import format_mac
 from .const import (
     BLE_LOCAL_NAME_PREFIX,
     CONF_MAC,
+    CONF_READ_ONLY,
     CONF_TRANSPORT,
     DEFAULT_POLLING_INTERVAL,
+    DEFAULT_READ_ONLY,
+    DEFAULT_READ_ONLY_NEW_BLE_ENTRY,
     DOMAIN,
     TRANSPORT_BLE,
     TRANSPORT_CLOUD,
@@ -176,7 +179,12 @@ class MCZConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_pairing(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Show the pairing instructions and create the BLE entry."""
+        """Show the pairing instructions and create the BLE entry.
+
+        The read-only box is ticked by default: a brand-new local link should
+        first be proven on reads. Unticking it is a deliberate act, and the
+        choice stays editable afterwards through the options flow.
+        """
         if user_input is not None:
             if self._mac_already_configured(self._discovered_mac):
                 return self.async_abort(reason="already_configured")
@@ -187,12 +195,21 @@ class MCZConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_TRANSPORT: TRANSPORT_BLE,
                     CONF_MAC: self._discovered_mac,
+                    CONF_READ_ONLY: user_input.get(
+                        CONF_READ_ONLY, DEFAULT_READ_ONLY_NEW_BLE_ENTRY
+                    ),
                 },
             )
 
         return self.async_show_form(
             step_id="pairing",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_READ_ONLY, default=DEFAULT_READ_ONLY_NEW_BLE_ENTRY
+                    ): bool
+                }
+            ),
             description_placeholders={"mac": self._discovered_mac or ""},
         )
 
@@ -281,19 +298,33 @@ class OptionsFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle options flow."""
+        """Handle options flow.
+
+        ``read_only`` is only offered when a local link exists: on a cloud-only
+        entry it would have nothing to lock, and showing a "no command reaches
+        the stove" switch that does nothing is worse than not showing it.
+        """
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
         polling_interval = self.config_entry.options.get(
             CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL
         )
+        read_only = self.config_entry.options.get(
+            CONF_READ_ONLY,
+            self.config_entry.data.get(CONF_READ_ONLY, DEFAULT_READ_ONLY),
+        )
 
         base_schema = {
             vol.Optional(CONF_POLLING_INTERVAL, default=polling_interval): vol.All(
                 vol.Coerce(int), vol.Clamp(min=DEFAULT_POLLING_INTERVAL, max=300)
-            )
+            ),
         }
+        if self.config_entry.data.get(CONF_TRANSPORT) in (
+            TRANSPORT_BLE,
+            TRANSPORT_HYBRID,
+        ):
+            base_schema[vol.Optional(CONF_READ_ONLY, default=read_only)] = bool
 
         return self.async_show_form(step_id="init", data_schema=vol.Schema(base_schema))
 

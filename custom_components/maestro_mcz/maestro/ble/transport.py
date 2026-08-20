@@ -43,12 +43,22 @@ class MczBleTransport:
     """Maintains a BLE link to one MCZ panel and its live register image."""
 
     def __init__(
-        self, hass: HomeAssistant, address: str, name: str | None = None
+        self,
+        hass: HomeAssistant,
+        address: str,
+        name: str | None = None,
+        read_only: bool = False,
     ) -> None:
-        """Initialise the transport for a given MAC address."""
+        """Initialise the transport for a given MAC address.
+
+        ``read_only`` arms the diagnostic mode: :meth:`write_reg` then refuses
+        every write. Every BLE write in the integration goes through that one
+        method, so the guard cannot be bypassed by a controller.
+        """
         self._hass = hass
         self._address = address
         self._name = name or f"MCZ {address}"
+        self._read_only = read_only
         self._client: BleakClientWithServiceCache | None = None
         self._tx: BleakGATTCharacteristic | None = None
         self._counter = protocol.COUNTER_START
@@ -58,6 +68,7 @@ class MczBleTransport:
         self._reassembler = protocol.BroadcastReassembler()
         self._read_expect: tuple[int, int] | None = None
         self._read_ok = False
+        self._stale_replies = 0
         self._read_event = asyncio.Event()
         self._io_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -67,6 +78,11 @@ class MczBleTransport:
     def address(self) -> str:
         """Return the target MAC address."""
         return self._address
+
+    @property
+    def read_only(self) -> bool:
+        """Return whether the diagnostic read-only mode is armed."""
+        return self._read_only
 
     @property
     def connected(self) -> bool:
@@ -119,6 +135,7 @@ class MczBleTransport:
             _LOGGER.debug("BLE link to %s dropped", self._address)
             self._regs.clear()
             self._caps = {}
+            self._stale_replies = 0
             self._read_expect = None
             self._reassembler = protocol.BroadcastReassembler()
 
@@ -186,6 +203,19 @@ class MczBleTransport:
             if expected is None:
                 _LOGGER.debug("Dropping unsolicited read reply on %s", self._address)
                 return
+            # Every read that timed out may still have an answer in flight. The
+            # byte count alone cannot tell it apart from the answer to the read
+            # now pending (a sweep sends identically sized blocks), so each
+            # timed-out read puts one reply in quarantine: the next reply is
+            # charged to it and discarded rather than credited to the wrong base.
+            if self._stale_replies > 0:
+                self._stale_replies -= 1
+                _LOGGER.debug(
+                    "Dropping late read reply on %s (%d still expected)",
+                    self._address,
+                    self._stale_replies,
+                )
+                return
             base, count = expected
             if len(pdu) < 3 or pdu[2] != count * 2:
                 _LOGGER.debug(
@@ -234,6 +264,9 @@ class MczBleTransport:
                 await self._send(protocol.modbus_read_pdu(reg, count))
                 await asyncio.wait_for(self._read_event.wait(), timeout)
             except TimeoutError as err:
+                # The answer may still land later; quarantine it so it cannot be
+                # credited to whichever read comes next.
+                self._stale_replies += 1
                 raise BleReadTimeout(
                     f"read 0x{reg:04X} x{count} timed out on {self._address}"
                 ) from err
@@ -246,7 +279,25 @@ class MczBleTransport:
         return {r: self._regs[r] for r in range(reg, reg + count) if r in self._regs}
 
     async def write_reg(self, reg: int, val: int) -> None:
-        """Write a single register (function ``0x06``)."""
+        """Write a single register (function ``0x06``).
+
+        Raises :class:`BleReadOnlyError` before touching the link when the
+        diagnostic read-only mode is armed. This check sits here — and not only
+        in the controllers — because this method is the single point every BLE
+        write passes through.
+        """
+        if self._read_only:
+            _LOGGER.warning(
+                "Read-only diagnostic mode: refusing BLE write of 0x%04X to"
+                " register 0x%04X on %s",
+                val,
+                reg,
+                self._address,
+            )
+            raise BleReadOnlyError(
+                f"read-only diagnostic mode: write 0x{val:04X} to register"
+                f" 0x{reg:04X} refused"
+            )
         if not self.connected:
             raise BleConnectionError("not connected")
         async with self._io_lock:
@@ -300,3 +351,12 @@ class BleConnectionError(Exception):
 
 class BleReadTimeout(BleConnectionError):
     """Raised when a register read gets no answer within the timeout."""
+
+
+class BleReadOnlyError(BleConnectionError):
+    """Raised when a write is attempted while the read-only mode is armed.
+
+    Derived from :class:`BleConnectionError` so that the existing callers, which
+    already treat a BLE failure as "this command did not reach the stove", keep
+    behaving correctly without knowing about the diagnostic mode.
+    """

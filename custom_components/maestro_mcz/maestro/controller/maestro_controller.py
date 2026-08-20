@@ -9,6 +9,8 @@ from typing import Any
 
 import aiohttp
 
+from homeassistant.exceptions import HomeAssistantError
+
 from .const import (
     ACTIVATE_PROGRAM_URL,
     APPLIANCE_URL,
@@ -255,5 +257,5 @@ class MaestroAuthenticationException(Exception):
     """An attempt to authenticate failed."""
 
 
-class MaestroConnectionException(Exception):
+class MaestroConnectionException(HomeAssistantError):
     """An attempt to connect failed."""

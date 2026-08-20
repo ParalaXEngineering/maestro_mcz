@@ -35,7 +35,13 @@
       },
       "pairing": {
         "title": "Put the stove in pairing mode",
-        "description": "Set the display in pairing mode before continuing: press + and − together, or cut the mains power for a few seconds (after reboot the display is also in pairing mode). Then submit to finish."
+        "description": "Set the display in pairing mode before continuing: press + and − together, or cut the mains power for a few seconds (after reboot the display is also in pairing mode). Then submit to finish.",
+        "data": {
+          "read_only": "Diagnostic mode: read only, no command sent to the stove"
+        },
+        "data_description": {
+          "read_only": "Leave this ticked to validate the Bluetooth link on readings alone. As long as it is on, the integration refuses every local write, so no entity or automation can start or stop the stove. It can be turned off later in the integration options."
+        }
       },
       "hybrid": {
         "title": "Hybrid (cloud + Bluetooth)",
@@ -53,7 +59,59 @@
     "step": {
       "init": {
         "data": {
-          "polling_interval": "Polling Interval (seconds)"
+          "polling_interval": "Polling Interval (seconds)",
+          "read_only": "Diagnostic mode: read only, no command sent to the stove"
+        },
+        "data_description": {
+          "read_only": "When on, the local Bluetooth link never writes a register. In Bluetooth-only mode every command is refused; in hybrid mode commands are sent through the cloud as usual."
+        }
+      }
+    }
+  },
+  "services": {
+    "ble_read_registers": {
+      "name": "Read Bluetooth registers",
+      "description": "Read a range of Modbus holding registers over the local Bluetooth link and return every plausible interpretation of each value. Read-only.",
+      "fields": {
+        "start": {
+          "name": "Start register",
+          "description": "First register to read, as a decimal number or a hexadecimal string (for example 0x03FA)."
+        },
+        "count": {
+          "name": "Count",
+          "description": "Number of consecutive registers to read (1 to 125)."
+        },
+        "entry_id": {
+          "name": "Config entry ID",
+          "description": "Config entry to query. Leave empty to use the first entry that owns a Bluetooth transport."
+        }
+      }
+    },
+    "ble_probe_fans": {
+      "name": "Probe fan registers",
+      "description": "Read the candidate registers for the second and third room fan and compare them with the cloud values when a cloud connection is available. Read-only.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry ID",
+          "description": "Config entry to query. Leave empty to use the first entry that owns a Bluetooth transport."
+        }
+      }
+    },
+    "ble_dump": {
+      "name": "Dump a register range",
+      "description": "Sweep a register range in blocks of 32 and return only the registers whose value is neither 0 nor 0xFFFF. At most 512 registers per call. Read-only.",
+      "fields": {
+        "start": {
+          "name": "Start register",
+          "description": "First register of the range, as a decimal number or a hexadecimal string (for example 0x05FD)."
+        },
+        "end": {
+          "name": "End register",
+          "description": "Last register of the range, inclusive, as a decimal number or a hexadecimal string (for example 0x0605)."
+        },
+        "entry_id": {
+          "name": "Config entry ID",
+          "description": "Config entry to query. Leave empty to use the first entry that owns a Bluetooth transport."
         }
       }
     }

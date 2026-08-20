@@ -1,0 +1,90 @@
+ble_read_registers:
+  name: Read Bluetooth registers
+  description: >-
+    Read a range of Modbus holding registers over the local Bluetooth link and
+    return every plausible interpretation of each value. Read-only: no register
+    is ever written, so this also works while the entry is in read-only
+    diagnostic mode.
+  fields:
+    start:
+      name: Start register
+      description: >-
+        First register to read, as a decimal number or a hexadecimal string
+        (for example 0x03FA).
+      required: true
+      example: "0x03FA"
+      selector:
+        text:
+    count:
+      name: Count
+      description: Number of consecutive registers to read (1 to 125).
+      required: false
+      default: 1
+      example: 6
+      selector:
+        number:
+          min: 1
+          max: 125
+          mode: box
+    entry_id:
+      name: Config entry ID
+      description: >-
+        Config entry to query. Leave empty to use the first entry that owns a
+        Bluetooth transport.
+      required: false
+      example: 01J8ZC0MCZBLE0000000000000
+      selector:
+        text:
+
+ble_probe_fans:
+  name: Probe fan registers
+  description: >-
+    Read the candidate registers for the second and third room fan
+    (0x03F7-0x03FC, 0x0324-0x0326, 0x05FD-0x0605) and, when a cloud connection
+    is available, compare each of them with the matching cloud value. Read-only.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: >-
+        Config entry to query. Leave empty to use the first entry that owns a
+        Bluetooth transport.
+      required: false
+      example: 01J8ZC0MCZBLE0000000000000
+      selector:
+        text:
+
+ble_dump:
+  name: Dump a register range
+  description: >-
+    Sweep a register range in blocks of 32 and return only the registers whose
+    value is neither 0 nor 0xFFFF, to locate the areas that carry data. Blocks
+    the panel does not answer are skipped. At most 512 registers per call.
+    Read-only.
+  fields:
+    start:
+      name: Start register
+      description: >-
+        First register of the range, as a decimal number or a hexadecimal
+        string (for example 0x05FD).
+      required: true
+      example: "0x05FD"
+      selector:
+        text:
+    end:
+      name: End register
+      description: >-
+        Last register of the range, inclusive, as a decimal number or a
+        hexadecimal string (for example 0x0605).
+      required: true
+      example: "0x0605"
+      selector:
+        text:
+    entry_id:
+      name: Config entry ID
+      description: >-
+        Config entry to query. Leave empty to use the first entry that owns a
+        Bluetooth transport.
+      required: false
+      example: 01J8ZC0MCZBLE0000000000000
+      selector:
+        text:

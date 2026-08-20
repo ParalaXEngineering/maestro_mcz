@@ -14,7 +14,10 @@ import logging
 from homeassistant.core import HomeAssistant
 
 from ..controller.controller_interface import MaestroControllerInterface
-from ..controller.maestro_controller import MaestroController
+from ..controller.maestro_controller import (
+    MaestroConnectionException,
+    MaestroController,
+)
 from ..controller.requests.activate_program import ProgramCommand
 from ..controller.responses.model import Model
 from ..controller.responses.state import State
@@ -57,6 +60,17 @@ class MaestroHybridController(MaestroControllerInterface):
     def transport(self) -> MczBleTransport:
         """Return the underlying BLE transport."""
         return self._transport
+
+    @property
+    def cloud(self) -> MaestroController:
+        """Return the wrapped cloud controller.
+
+        Exposed so a diagnostic caller can compare a raw BLE register against
+        the *unmixed* cloud value; ``get_stove_status_for_stove`` returns the
+        cloud payload already overlaid with the BLE one, which would make such a
+        comparison circular.
+        """
+        return self._cloud
 
     @property
     def is_authenticated(self) -> bool:
@@ -203,7 +217,17 @@ class MaestroHybridController(MaestroControllerInterface):
         ``registers.ONOFF_WRITE``). Once a register has actually been written the
         call never falls back to the cloud, because replaying an already-applied
         command would double-apply it.
+
+        Read-only diagnostic mode refuses the command outright — cloud included.
+        The option is presented as "no command reaches the stove", and routing it
+        through the cloud instead would light a combustion appliance that the
+        user believes is locked. Diagnostic mode is for proving the local link
+        reads correctly; it is not a transport preference.
         """
+        if self._transport.read_only:
+            raise MaestroConnectionException(
+                "read-only diagnostic mode is armed: no command is sent to the stove"
+            )
         resolved = (
             self._resolve_commands(commands) if self._transport.connected else None
         )

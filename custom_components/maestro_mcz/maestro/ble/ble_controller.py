@@ -144,19 +144,33 @@ class MaestroBleController(MaestroControllerInterface):
     """Controller that speaks only to the local BLE panel."""
 
     def __init__(
-        self, hass: HomeAssistant, address: str, name: str | None = None
+        self,
+        hass: HomeAssistant,
+        address: str,
+        name: str | None = None,
+        read_only: bool = False,
     ) -> None:
-        """Initialise a BLE-only controller for one panel MAC."""
+        """Initialise a BLE-only controller for one panel MAC.
+
+        ``read_only`` is the diagnostic mode: reads keep feeding the entities,
+        every command is rejected before anything reaches the stove.
+        """
         self._hass = hass
         self._address = address
         self._name = name
-        self._transport = MczBleTransport(hass, address, name)
+        self._read_only = read_only
+        self._transport = MczBleTransport(hass, address, name, read_only=read_only)
         self._unique_code: str | None = None
 
     @property
     def transport(self) -> MczBleTransport:
         """Return the underlying transport."""
         return self._transport
+
+    @property
+    def read_only(self) -> bool:
+        """Return whether the diagnostic read-only mode is armed."""
+        return self._read_only
 
     @property
     def is_authenticated(self) -> bool:
@@ -256,7 +270,22 @@ class MaestroBleController(MaestroControllerInterface):
         commands: list[ProgramCommand],
         callback_on_success=None,
     ) -> None:
-        """Resolve each command to a register write over BLE."""
+        """Resolve each command to a register write over BLE.
+
+        In read-only diagnostic mode nothing is attempted at all: the call fails
+        before the link is even used, so no register — power included — can be
+        touched by an entity, an automation or a script.
+        """
+        if self._read_only:
+            _LOGGER.warning(
+                "Read-only diagnostic mode: refusing %d command(s) for device %s",
+                len(commands),
+                device_id,
+            )
+            raise MaestroConnectionException(
+                "read-only diagnostic mode: no command is sent to the stove"
+            )
+
         if not await self._transport.ensure_connected():
             raise MaestroConnectionException("BLE link down; cannot send command")
 
@@ -294,7 +323,15 @@ class MaestroBleController(MaestroControllerInterface):
         ``0x0322`` is read first and the button is only pressed when the stove
         is not already in the requested state, otherwise a redundant command
         would invert it.
+
+        The read-only check is repeated here even though the caller already
+        performs it: this is the one code path that can light a stove, so it
+        does not rely on a guard placed elsewhere.
         """
+        if self._read_only:
+            raise MaestroConnectionException(
+                "read-only diagnostic mode: refusing to press the power button"
+            )
         desired_on = registers.decode_onoff(value)
         if desired_on is None:
             raise MaestroConnectionException(
