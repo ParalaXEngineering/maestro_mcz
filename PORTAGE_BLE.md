@@ -157,6 +157,50 @@ indépendamment du profil cloud. Bonus lecture seule : RPM combustion `0x02CE`, 
 le **cloud** tant qu'un registre BLE per-ventilo n'est pas identifié (foyewmaddeeb : « beaucoup de registres
 non reconnus » — à reverser en live sur le poêle plus tard).
 
+## 6bis. Ventilo 2 — hypothèse de registres (à confirmer, lecture seule)
+
+Le bloc de paramètres est **contigu** et l'ordre des champs de la dataclasse `Status` (cloud) suit
+l'ordre des registres. Or le nombre de trous correspond **exactement** au nombre de champs déclarés :
+
+| Registre | Déc. | Champ cloud | Statut |
+|---|---|---|---|
+| `0x03F7` | 1015 | `set_amb1` | **connu** |
+| `0x03F8` | 1016 | `set_amb2` ? | trou |
+| `0x03F9` | 1017 | `set_amb3` ? | trou |
+| `0x03FA` | 1018 | `set_vent_v1` | **connu** |
+| `0x03FB` | 1019 | **`set_vent_v2` ?** | trou |
+| `0x03FC` | 1020 | `set_vent_v3` ? | trou |
+
+Entre `set_amb1` et `set_vent_v1` il y a **2 trous**, et le cloud déclare **exactement 2 champs**
+entre eux (`set_amb2`, `set_amb3`). Ce n'est pas « il y a des trous » : c'est un alignement exact,
+dans l'ordre. La même logique place `set_vent_v2`/`v3` en `0x03FB`/`0x03FC`.
+
+Deux corollaires, même raisonnement :
+- **Vitesses live** : `index_vel_v1` = `0x0324` ⇒ `index_vel_v2`/`v3` en `0x0325`/`0x0326` (trous).
+- **Tables de vitesses** : `v_ven1` = `0x05FD..0x05FF` (1533-1535) ⇒ `v_ven2` = `0x0600..0x0602`,
+  `v_ven3` = `0x0603..0x0605`. Cohérent avec `v_ven1_v0`/`v_ven2_v0`/`v_ven3_v0` côté cloud et avec
+  `abi_ven1/2` + `abi_ven3/4` (`0x06F4`/`0x06F5`) qui gèrent jusqu'à 4 ventilos.
+
+**Comment le prouver sans écrire** : en mode hybride, le cloud donne la valeur de `set_vent_v2` et le
+service `maestro_mcz.ble_probe_fans` lit `0x03FB` en BLE et affiche les deux côte à côte. Si elles
+coïncident (et bougent ensemble quand on change le ventilo 2 depuis l'app), l'hypothèse est
+confirmée. Aucune écriture n'est nécessaire pour trancher.
+
+## 6ter. Mode diagnostic (lecture seule)
+
+Coché **par défaut** à la création d'une entrée Bluetooth. Il refuse **toute** commande — cloud
+compris — pour que la validation du lien local ne soit pas polluée par le repli cloud (« pas de faux
+espoirs » : sinon le cloud répond à la place du BLE et tout paraît fonctionner). Le refus est posé
+dans `transport.write_reg`, le point de passage unique de toute écriture BLE.
+
+Services de diagnostic (lecture seule, fonction Modbus `0x03` uniquement) :
+
+| Service | Usage |
+|---|---|
+| `maestro_mcz.ble_read_registers` | lire `start` (+ `count`), rendu en brut/hex/÷10/signé/ASCII |
+| `maestro_mcz.ble_probe_fans` | lit les registres candidats et les compare aux valeurs cloud |
+| `maestro_mcz.ble_dump` | balaye une plage (≤ 512 reg.), ne renvoie que les valeurs utiles |
+
 ## 7. Risques ouverts (à lever sur le poêle réel)
 - **R-pair** : bonding perdu au reboot Pi/poêle → re-appairage manuel (+/−). À tester.
 - **R-exclu** : le poêle n'accepte probablement qu'UNE connexion BLE → si HA tient le lien, l'app MCZ ne
