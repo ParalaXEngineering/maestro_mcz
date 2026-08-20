@@ -171,6 +171,41 @@ non reconnus » — à reverser en live sur le poêle plus tard).
   → router au cloud en hybride, ne pas créer d'entité BLE fantôme.
 
 ## 8. Livraison / test
+
+### Installation (chemin retenu)
+HAOS n'expose pas d'écriture dans `custom_components/` par l'API : **pas d'upload direct par MCP**.
+En revanche le MCP peut piloter HACS de bout en bout :
+`ha_manage_hacs(action="add_repository", repository="ParalaXEngineering/maestro_mcz",
+category="integration")`, puis `action="download"`, puis `ha_restart`.
+Prérequis : **le fork doit exister sur GitHub** (HACS tire depuis GitHub).
+
+### À vérifier au premier essai sur le poêle
+Poêle **froid et éteint**, quelqu'un devant l'appareil, interrupteur secteur accessible.
+Journalisation :
+
+```yaml
+logger:
+  logs:
+    custom_components.maestro_mcz: debug
+    homeassistant.components.bluetooth: info
+```
+
+1. **Déchiffrement (R-crypto)** — si les constantes ne collent pas au FW 21.19 : `not a valid frame`
+   en boucle et tous les reads en timeout. Verdict binaire, immédiat.
+2. **Appairage** — poêle déjà appairé au téléphone ⇒ annonce *directed*. Mettre l'afficheur en mode
+   appairage (**+** et **−**, ou coupure secteur) avant de lancer le flux.
+3. **Registre `0x0322`** — le plus important. Faire un cycle complet depuis l'afficheur et relever
+   **toutes** les valeurs prises. Si autre chose que {1, 3} apparaît, la logique on/off doit évoluer
+   (aujourd'hui : toute valeur inconnue ⇒ refus d'agir, donc pas de risque, mais commande inopérante).
+4. **Modes 3/4** — sélectionner Comfort/Turbo depuis l'afficheur et lire `0x032E` pour confirmer les
+   codes avant de les réactiver à l'écriture.
+5. **Qualité du lien** — fréquence des `timed out` et `Dropping mismatched read reply`. Si c'est
+   fréquent, la portée (5 m / 2 murs) est marginale → passer par un proxy BLE ESPHome (l'add-on est
+   déjà installé) avant d'envisager le contrôle on/off en BLE.
+6. **Exclusivité** — vérifier si l'app MCZ peut encore se connecter en BLE pendant que HA tient le
+   lien, et si HA se reconnecte proprement après.
+7. **Conversions ÷10** — ambiante, carte, fumées plausibles ?
+8. **Les 2 ventilos** — Fan 1 doit passer en BLE (`0x03FA`), Fan 2 doit retomber au cloud.
 - Cible : installer via **HACS** (custom repository) depuis le fork `ParalaXEngineering/maestro_mcz`.
 - HAOS n'expose pas d'écriture fichier `custom_components/` par l'API : l'upload direct via MCP n'est
   a priori **pas** possible → passage par GitHub + HACS (à confirmer dans le status).
@@ -206,6 +241,26 @@ Modifiés : `manifest.json` (dependencies `bluetooth_adapters`, matcher `MCZ_EP*
 hybride + découverte + étape d'appairage), `__init__.py` (choix du contrôleur), `strings.json` +
 `translations/en.json`.
 
+### ⚠️ Le piège de l'allumage/extinction — à lire avant de toucher au code
+
+`0x038A` n'est **pas** un état, c'est un **appui sur le bouton power** (toggle). Or côté cloud,
+`climate.py` envoie une valeur constante `True` pour « allumer » **comme** pour « éteindre » : la
+direction est portée par son garde `self.hvac_mode is not hvac_mode`, pas par la valeur.
+
+Conséquence : **on ne peut pas déduire l'état voulu de la valeur reçue** quand le modèle déclare
+`com_on_off` en BOOLEAN. Une première version interprétait ce `True` comme « état voulu = allumé » :
+elle rendait l'extinction impossible et pouvait **allumer le poêle sur une demande d'extinction** si
+l'état affiché était en retard sur la réalité. D'où la règle actuelle :
+
+- **Hybride** : `com_on_off` est **absent de `WRITE_MAP`** → l'allumage/extinction part au **cloud**,
+  seul endroit où la sémantique d'appui est correcte.
+- **BLE-seul** : le modèle synthétisé déclare `com_on_off` en **INT** avec `variants ["off","on"]` et
+  `mappings {"off":0,"on":1}` → `climate.py` envoie un `0`/`1` explicite, et seulement là le code
+  lit la phase `0x0322` et n'appuie que si l'état réel diffère.
+- **Phase inconnue ou non fraîche ⇒ on n'appuie pas** (on lève une erreur). C'est volontairement plus
+  strict que le firmware, qui appuie à l'aveugle : lui a une phase rafraîchie en continu et un humain
+  devant l'appareil, nous pouvons être appelés par une automatisation à 3 h du matin.
+
 ### Défauts trouvés en revue et corrigés
 1. **Toggle on/off aveugle (risque de sûreté)** — `0x038A` est un *toggle* : le code écrivait le
    toggle sans comparer à l'état demandé → « éteindre » un poêle déjà éteint l'**allumait**.
@@ -218,6 +273,34 @@ hybride + découverte + étape d'appairage), `__init__.py` (choix du contrôleur
 4. **Réponse Fn03 tardive** — une réponse arrivant après timeout était décodée avec la base du *read
    suivant* → registres corrompus. Corrigé par un drapeau `_read_pending`.
 5. `except A, B:` parenthésé (portabilité).
+6. **Sémantique on/off** (revue Opus 5) — voir l'encadré ci-dessus. Le plus grave des défauts : la
+   première correction du toggle était elle-même fausse.
+7. **Repli cloud après écriture BLE déjà émise** — une erreur en cours de série rejouait *toute* la
+   commande sur le cloud → double application. Le repli n'a plus lieu qu'avant toute écriture.
+8. **Lecture en échec renvoyée en silence** — `read_regs` renvoyait le cache périmé sur timeout ;
+   elle lève désormais `BleReadTimeout`, ce qui permet de distinguer une valeur fraîche d'une vieille.
+9. **Réponse tardive mal créditée** — le garde ne couvrait pas le cas « réponse de la lecture N qui
+   arrive pendant la lecture N+1 » (51 registres écrits à la mauvaise base, phase comprise).
+   Désormais on mémorise `(base, count)` attendus et on vérifie le byte count.
+10. **Image registre survivant à une déconnexion** — vidée à la déconnexion (plus de valeur périmée
+    prise pour une valeur live), capacités re-scannées à la reconnexion.
+11. **Modes Comfort/Turbo** — codes 3/4 non vérifiés : lisibles, mais plus proposés à l'écriture.
+12. **Doublon d'entrée** — une entrée hybride (clé = compte) n'empêchait pas d'ajouter la même
+    machine en BLE (clé = MAC) → deux intégrations se disputant l'unique connexion BLE. Contrôle
+    explicite par MAC ajouté aux trois chemins.
+13. **Impasse du config flow** — si le poêle n'était pas découvert (cas normal quand il est appairé au
+    téléphone), le flux abandonnait ; il propose maintenant la saisie manuelle de la MAC.
+14. **Ordre des clés `manifest.json`** — conforme à hassfest (domain, name, puis alphabétique).
+
+### Reste à faire (identifié, non corrigé)
+- `update_data_after_set` (2×3 s + 2 refresh, calibré cloud) est trop lourd pour le BLE : à réduire
+  et à fusionner les 3 derniers blocs de `POLL_READS` en une lecture `0x03E9 ×15` comme le firmware.
+- Le binaire « Cloud Connection Status » suit désormais `cloud OR ble` : il affichera « connecté »
+  cloud coupé. À alimenter depuis `self._cloud.is_authenticated`, ou ajouter un capteur « Lien BLE ».
+- Compte multi-poêles : le chemin BLE ignore `device_id` (sans objet ici, un seul poêle).
+- `translations/nl.json` non mis à jour (repli anglais, pas de casse).
+- CRC16 non vérifié en réception (le firmware, lui, jette la trame) ; MTU 517 jamais négociée
+  explicitement.
 
 ### Tests hors ligne passés
 Aller-retour de trame (`010603f700d2` → chiffrée 32 o → déchiffrée, token + CRC + PKCS#7),

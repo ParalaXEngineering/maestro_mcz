@@ -56,8 +56,8 @@ class MczBleTransport:
         self._caps: dict[str, object] = {}
         self._serial: str = ""
         self._reassembler = protocol.BroadcastReassembler()
-        self._last_read_base = 0x02BC
-        self._read_pending = False
+        self._read_expect: tuple[int, int] | None = None
+        self._read_ok = False
         self._read_event = asyncio.Event()
         self._io_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -114,7 +114,13 @@ class MczBleTransport:
             )
 
         def _on_disconnect(_client: BleakClientWithServiceCache) -> None:
+            # Drop the cached image: a value read before the link went down must
+            # never be mistaken for a live one after it comes back.
             _LOGGER.debug("BLE link to %s dropped", self._address)
+            self._regs.clear()
+            self._caps = {}
+            self._read_expect = None
+            self._reassembler = protocol.BroadcastReassembler()
 
         client = await establish_connection(
             BleakClientWithServiceCache,
@@ -167,16 +173,34 @@ class MczBleTransport:
         _counter, pdu = parsed
         if not pdu:
             return
+        if len(pdu) < 2:
+            return
         if pdu[1] == 0x03:
-            # A late reply to a read that already timed out would otherwise be
-            # decoded against the *next* read's base and corrupt the image, so
-            # replies are only accepted while their own read is still pending.
-            if not self._read_pending:
-                _LOGGER.debug("Dropping late read reply on %s", self._address)
+            # A function-0x03 reply carries no address, so it can only be decoded
+            # against the base of the read it answers. A late reply — one whose
+            # read already timed out — must therefore be dropped: crediting it to
+            # the *next* read's base would silently corrupt the register image,
+            # phase included. Only a reply whose byte count matches the pending
+            # read is accepted.
+            expected = self._read_expect
+            if expected is None:
+                _LOGGER.debug("Dropping unsolicited read reply on %s", self._address)
                 return
-            self._read_pending = False
-            for reg, val in protocol.decode_read_response(pdu, self._last_read_base):
+            base, count = expected
+            if len(pdu) < 3 or pdu[2] != count * 2:
+                _LOGGER.debug(
+                    "Dropping mismatched read reply on %s (want %d bytes for 0x%04X,"
+                    " got %s)",
+                    self._address,
+                    count * 2,
+                    base,
+                    pdu[2] if len(pdu) > 2 else "?",
+                )
+                return
+            self._read_expect = None
+            for reg, val in protocol.decode_read_response(pdu, base):
                 self._regs[reg] = val
+            self._read_ok = True
             self._read_event.set()
         elif pdu[1] == 0x06:
             echo = protocol.decode_write_echo(pdu)
@@ -193,25 +217,32 @@ class MczBleTransport:
     async def read_regs(
         self, reg: int, count: int, timeout: float = READ_TIMEOUT
     ) -> dict[int, int]:
-        """Read ``count`` registers from ``reg`` and return the affected slice.
+        """Read ``count`` registers from ``reg`` and return the answered slice.
 
         Only one function ``0x03`` is ever in flight (serialised by a lock).
+        Raises :class:`BleReadTimeout` when the panel does not answer, so a
+        caller can tell a fresh value from a stale cached one — deciding whether
+        to press the power button on stale data would be unsafe.
         """
         if not self.connected:
             raise BleConnectionError("not connected")
         async with self._io_lock:
-            self._last_read_base = reg
             self._read_event.clear()
-            self._read_pending = True
-            await self._send(protocol.modbus_read_pdu(reg, count))
+            self._read_ok = False
+            self._read_expect = (reg, count)
             try:
+                await self._send(protocol.modbus_read_pdu(reg, count))
                 await asyncio.wait_for(self._read_event.wait(), timeout)
-            except TimeoutError:
-                _LOGGER.debug(
-                    "BLE read 0x%04X x%d on %s timed out", reg, count, self._address
-                )
+            except TimeoutError as err:
+                raise BleReadTimeout(
+                    f"read 0x{reg:04X} x{count} timed out on {self._address}"
+                ) from err
+            except BleConnectionError:
+                raise
+            except Exception as err:  # noqa: BLE001
+                raise BleConnectionError(f"read 0x{reg:04X} failed: {err}") from err
             finally:
-                self._read_pending = False
+                self._read_expect = None
         return {r: self._regs[r] for r in range(reg, reg + count) if r in self._regs}
 
     async def write_reg(self, reg: int, val: int) -> None:
@@ -230,6 +261,8 @@ class MczBleTransport:
                 break
             try:
                 await self.read_regs(reg, count)
+            except BleReadTimeout:
+                continue  # one unanswered block must not abort the whole cycle
             except BleConnectionError:
                 break
         if not self._serial:
@@ -253,6 +286,8 @@ class MczBleTransport:
                 break
             try:
                 await self.read_regs(reg, count, timeout=CAP_SCAN_TIMEOUT)
+            except BleReadTimeout:
+                continue
             except BleConnectionError:
                 break
         self._caps = registers.parse_capabilities(self._regs)
@@ -261,3 +296,7 @@ class MczBleTransport:
 
 class BleConnectionError(Exception):
     """Raised when the BLE link is unavailable or fails."""
+
+
+class BleReadTimeout(BleConnectionError):
+    """Raised when a register read gets no answer within the timeout."""

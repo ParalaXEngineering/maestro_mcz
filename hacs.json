@@ -1,5 +1,5 @@
 {
-  "name": "Maestro MCZ (cloud)",
+  "name": "Maestro MCZ (cloud + local Bluetooth)",
   "content_in_root": false,
   "homeassistant": "2026.3.0"
 }

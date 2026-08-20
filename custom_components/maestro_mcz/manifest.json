@@ -1,6 +1,11 @@
 {
   "domain": "maestro_mcz",
   "name": "Maestro MCZ",
+  "bluetooth": [
+    {
+      "local_name": "MCZ_EP*"
+    }
+  ],
   "codeowners": [
     "@crisicus",
     "@Robbe-B"
@@ -12,14 +17,9 @@
   "documentation": "https://github.com/Robbe-B/maestro_mcz",
   "integration_type": "hub",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/Robbe-B/maestro_mcz/issues",
-  "bluetooth": [
-    {
-      "local_name": "MCZ_EP*"
-    }
-  ],
+  "issue_tracker": "https://github.com/ParalaXEngineering/maestro_mcz/issues",
   "requirements": [
     "bleak-retry-connector>=3.5.0"
   ],
-  "version": "1.0.3"
+  "version": "1.1.0"
 }

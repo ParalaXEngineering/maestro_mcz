@@ -197,21 +197,33 @@ class MaestroHybridController(MaestroControllerInterface):
         commands: list[ProgramCommand],
         callback_on_success=None,
     ) -> None:
-        """Route commands to BLE when every one maps to a register, else cloud."""
-        resolved = self._resolve_commands(commands) if self._transport.connected else None
+        """Route commands to BLE when every one maps to a register, else cloud.
+
+        Power is never in this path: it stays a cloud command (see
+        ``registers.ONOFF_WRITE``). Once a register has actually been written the
+        call never falls back to the cloud, because replaying an already-applied
+        command would double-apply it.
+        """
+        resolved = (
+            self._resolve_commands(commands) if self._transport.connected else None
+        )
         if resolved is not None:
+            written = False
             try:
                 for reg, encoding, minv, maxv, value in resolved:
-                    if encoding == "onoff_toggle":
-                        await self._set_onoff(value)
-                    else:
-                        raw = registers.encode_write(encoding, value, minv, maxv)
-                        await self._transport.write_reg(reg, raw)
+                    raw = registers.encode_write(encoding, value, minv, maxv)
+                    await self._transport.write_reg(reg, raw)
+                    written = True
                 if callback_on_success is not None:
                     callback_on_success()
                 return
             except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("BLE command failed, delegating to cloud: %s", err)
+                if written:
+                    _LOGGER.warning(
+                        "BLE command partially applied, not replaying on cloud: %s", err
+                    )
+                    raise
+                _LOGGER.debug("BLE command failed before any write, using cloud: %s", err)
 
         await self._cloud.activate_program_with_commands_for_stove(
             device_id,
@@ -235,14 +247,10 @@ class MaestroHybridController(MaestroControllerInterface):
             if mapping is None:
                 return None
             reg, encoding, minv, maxv = mapping
-            if encoding == "onoff_toggle":
-                if registers.decode_onoff(command.Value) is None:
-                    return None
-            else:
-                try:
-                    registers.encode_write(encoding, command.Value, minv, maxv)
-                except (ValueError, TypeError):
-                    return None
+            try:
+                registers.encode_write(encoding, command.Value, minv, maxv)
+            except (ValueError, TypeError):
+                return None
             resolved.append((reg, encoding, minv, maxv, command.Value))
         return resolved
 
@@ -258,23 +266,3 @@ class MaestroHybridController(MaestroControllerInterface):
                     return configuration.sensor_name
         return None
 
-    async def _set_onoff(self, value: object) -> None:
-        """Bring the stove to the requested power state over BLE.
-
-        ``0x038A`` toggles rather than setting an absolute state, so the coarse
-        phase is read first and the button is only pressed when the stove is
-        not already in the requested state.
-        """
-        desired_on = registers.decode_onoff(value)
-        if desired_on is None:
-            raise ValueError(f"cannot interpret '{value}' as a power state")
-        phase = None
-        try:
-            regs = await self._transport.read_regs(registers.REG_PHASE, 1)
-            phase = regs.get(registers.REG_PHASE)
-        except Exception:  # noqa: BLE001
-            pass
-        if not registers.needs_onoff_toggle(phase, desired_on):
-            _LOGGER.debug("Stove already %s; skipping toggle", "on" if desired_on else "off")
-            return
-        await self._transport.write_reg(registers.REG_ONOFF, 1)

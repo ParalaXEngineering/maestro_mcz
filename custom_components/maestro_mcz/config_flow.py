@@ -129,22 +129,48 @@ class MCZConfigFlow(ConfigFlow, domain=DOMAIN):
                 devices[info.address] = f"{name} ({info.address})"
         return devices
 
+    def _mac_already_configured(self, mac: str) -> bool:
+        """Return whether an entry already drives this panel.
+
+        A panel accepts a single BLE connection, so a second entry pointing at
+        the same MAC would have two coordinators fighting over the link.
+        """
+        wanted = format_mac(mac)
+        return any(
+            entry.data.get(CONF_MAC) and format_mac(entry.data[CONF_MAC]) == wanted
+            for entry in self._async_current_entries()
+        )
+
     async def async_step_bluetooth_pick(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Pick a BLE MAC from the discovered MCZ panels."""
+        """Pick a BLE MAC among the discovered panels, or type one in.
+
+        A stove already paired to the MCZ app advertises directed to that phone,
+        so it may well be invisible to the scanner until the panel is put in
+        pairing mode — hence the free-text fallback instead of a dead end.
+        """
         devices = self._discovered_ble_devices()
-        if not devices:
-            return self.async_abort(reason="no_devices_found")
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._discovered_mac = user_input[CONF_MAC]
-            self._discovered_name = devices.get(self._discovered_mac)
-            return await self.async_step_pairing()
+            mac = user_input[CONF_MAC].strip()
+            if not mac:
+                errors[CONF_MAC] = "invalid_mac"
+            elif self._mac_already_configured(mac):
+                return self.async_abort(reason="already_configured")
+            else:
+                self._discovered_mac = mac
+                self._discovered_name = devices.get(mac)
+                return await self.async_step_pairing()
+
+        if devices:
+            schema = vol.Schema({vol.Required(CONF_MAC): vol.In(devices)})
+        else:
+            schema = vol.Schema({vol.Required(CONF_MAC): str})
 
         return self.async_show_form(
-            step_id="bluetooth_pick",
-            data_schema=vol.Schema({vol.Required(CONF_MAC): vol.In(devices)}),
+            step_id="bluetooth_pick", data_schema=schema, errors=errors
         )
 
     async def async_step_pairing(
@@ -152,6 +178,8 @@ class MCZConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Show the pairing instructions and create the BLE entry."""
         if user_input is not None:
+            if self._mac_already_configured(self._discovered_mac):
+                return self.async_abort(reason="already_configured")
             await self.async_set_unique_id(format_mac(self._discovered_mac))
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
@@ -174,6 +202,11 @@ class MCZConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle a BLE panel discovered by Home Assistant's Bluetooth stack."""
         await self.async_set_unique_id(format_mac(discovery_info.address))
         self._abort_if_unique_id_configured()
+        # A hybrid/cloud entry keys on the account, not the MAC, so the unique-id
+        # check above cannot see it; without this the same panel could be set up
+        # twice and the two entries would fight over its single BLE connection.
+        if self._mac_already_configured(discovery_info.address):
+            return self.async_abort(reason="already_configured")
         self._discovered_mac = discovery_info.address
         self._discovered_name = f"{discovery_info.name} ({discovery_info.address})"
         self.context["title_placeholders"] = {"name": discovery_info.name}

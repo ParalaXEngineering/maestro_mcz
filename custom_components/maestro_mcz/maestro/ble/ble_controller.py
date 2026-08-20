@@ -70,7 +70,23 @@ def build_synth_model(
         }
 
     model_configurations = [
-        model_cfg("Spegnimento", "ble-onoff", cfg("com_on_off", "boolean")),
+        # Declared INT (not BOOLEAN) on purpose: the boolean power path in
+        # climate.py sends a constant ``True`` for both directions because the
+        # cloud treats com_on_off as a button press. 0x038A is a toggle too, but
+        # the local link knows the real phase, so it needs the *requested* state
+        # to decide whether to press at all — the INT path supplies it as 0/1.
+        model_cfg(
+            "Spegnimento",
+            "ble-onoff",
+            cfg(
+                "com_on_off",
+                "int",
+                min="0",
+                max="1",
+                variants=["off", "on"],
+                mappings={"off": 0, "on": 1},
+            ),
+        ),
         model_cfg(
             "Set_amb_temp", "ble-temp", cfg("set_amb1", "double", min="5", max="45")
         ),
@@ -81,9 +97,11 @@ def build_synth_model(
                 "mod_funz",
                 "int",
                 min="0",
-                max="4",
-                variants=list(registers.MODE_KEYS.values()),
-                mappings={key: code for code, key in registers.MODE_KEYS.items()},
+                max="2",
+                variants=list(registers.MODE_KEYS_CONFIRMED.values()),
+                mappings={
+                    key: code for code, key in registers.MODE_KEYS_CONFIRMED.items()
+                },
             ),
         ),
         model_cfg(
@@ -251,6 +269,8 @@ class MaestroBleController(MaestroControllerInterface):
     async def _apply_command(self, sensor_name: str | None, value: object) -> None:
         """Write a single logical command to its register."""
         mapping = registers.WRITE_MAP.get(sensor_name)
+        if mapping is None and sensor_name == "com_on_off":
+            mapping = registers.ONOFF_WRITE
         if mapping is None:
             raise MaestroConnectionException(
                 f"no BLE register for sensor '{sensor_name}'"
@@ -280,13 +300,20 @@ class MaestroBleController(MaestroControllerInterface):
             raise MaestroConnectionException(
                 f"cannot interpret '{value}' as a power state"
             )
-        phase = None
         try:
             regs = await self._transport.read_regs(registers.REG_PHASE, 1)
-            phase = regs.get(registers.REG_PHASE)
-        except BleConnectionError:
-            pass
+        except BleConnectionError as err:
+            raise MaestroConnectionException(
+                f"refusing to switch the stove without a fresh phase reading: {err}"
+            ) from err
+        phase = regs.get(registers.REG_PHASE)
+        if not registers.is_known_phase(phase):
+            raise MaestroConnectionException(
+                f"refusing to switch the stove: unexpected phase {phase!r}"
+            )
         if not registers.needs_onoff_toggle(phase, desired_on):
-            _LOGGER.debug("Stove already %s; skipping toggle", "on" if desired_on else "off")
+            _LOGGER.debug(
+                "Stove already %s; not pressing power", "on" if desired_on else "off"
+            )
             return
         await self._transport.write_reg(registers.REG_ONOFF, 1)

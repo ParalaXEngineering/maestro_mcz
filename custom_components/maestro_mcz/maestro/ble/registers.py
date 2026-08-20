@@ -43,7 +43,12 @@ REG_PHASE = protocol.REG["phase"]
 # Logical mode keys (lowercase) — these must match both the fan
 # ``mode_to_configuration_name_mapping`` keys and the climate preset variants in
 # ``models.py`` so that ``State.mode`` resolves against the (synthesised) model.
+# Only 0..2 are confirmed on hardware. Codes 3 (Comfort) and 4 (Turbo) are
+# assumed by every upstream source (firmware_oven.h, ble-protocol.md, and the
+# reference client which literally labels them "Comfort?"/"Turbo?"), so they are
+# read back but never offered as a writable target until confirmed on a stove.
 MODE_KEYS = {0: "manual", 1: "auto", 2: "overnight", 3: "comfort", 4: "turbo"}
+MODE_KEYS_CONFIRMED = {0: "manual", 1: "auto", 2: "overnight"}
 
 
 # --------------------------------------------------------------------------- #
@@ -89,8 +94,19 @@ WRITE_MAP: dict[str, tuple[int, str, float | None, float | None]] = {
     "set_vent_v1": (REG_FAN, "fan", 0, 6),
     "silent_enabled": (REG_SILENT, "bool", 0, 1),
     "silent": (REG_SILENT, "bool", 0, 1),
-    "com_on_off": (REG_ONOFF, "onoff_toggle", None, None),
 }
+
+# Power is deliberately absent from WRITE_MAP.
+#
+# ``0x038A`` is a toggle, so a caller must know the *requested* state to decide
+# whether pressing the button is right. The cloud model declares com_on_off as
+# BOOLEAN, and climate.py's boolean branch sends a constant ``True`` for both
+# "turn on" and "turn off" (the direction lives in its own guard). Reading an
+# absolute state out of that value is impossible, so in hybrid mode power is
+# left to the cloud, which owns that press semantic. Only the BLE-only
+# controller — whose synthesised model declares com_on_off as INT with explicit
+# 0/1 mappings — writes this register locally.
+ONOFF_WRITE: tuple[int, str, None, None] = (REG_ONOFF, "onoff_toggle", None, None)
 
 
 def decode_onoff(value: object) -> bool | None:
@@ -112,17 +128,29 @@ def decode_onoff(value: object) -> bool | None:
     return None
 
 
+# Coarse phase values documented by the firmware: 1 = off/standby, 3 = running.
+# Anything else is treated as unknown rather than guessed at, because the only
+# power control is a toggle and a wrong guess lights a combustion appliance.
+PHASE_OFF = 1
+PHASE_ON = 3
+
+
+def is_known_phase(phase: int | None) -> bool:
+    """Return whether ``phase`` is a documented coarse phase value."""
+    return phase in (PHASE_OFF, PHASE_ON)
+
+
 def needs_onoff_toggle(phase: int | None, desired_on: bool) -> bool:
     """Return whether the power button must be pressed to reach ``desired_on``.
 
-    Mirrors ``ovenSetOnOff`` in the firmware: coarse phase ``0x0322`` is 1 when
-    the stove is off/standby and 3 when it runs. When the phase is unknown the
-    toggle is issued (the firmware does the same), since there is no absolute
-    power register to fall back on.
+    Callers must check :func:`is_known_phase` first: an unknown phase has no
+    safe answer here, so it is reported as "no press needed" rather than
+    pressing blindly the way the firmware does (its phase is continuously fed
+    by status pushes and its caller is a human standing at the stove).
     """
-    if phase is None:
-        return True
-    return desired_on == (phase == 1)
+    if not is_known_phase(phase):
+        return False
+    return desired_on == (phase == PHASE_OFF)
 
 
 def encode_write(encoding: str, value: object, minv, maxv) -> int:
