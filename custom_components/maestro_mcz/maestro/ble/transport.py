@@ -119,6 +119,26 @@ class MczBleTransport:
                 return False
             return self.connected
 
+    @staticmethod
+    async def _pair(client: BleakClientWithServiceCache) -> None:
+        """Bond with the panel before using its control service.
+
+        The panel requires LE Secure Connections bonding (Just Works, no IO
+        capability) and hangs up on a client that has not bonded — the link
+        comes up and drops again within a second. On BlueZ, bonding only happens
+        if it is asked for, so it is requested here.
+
+        Not every backend implements it: an ESPHome proxy has no pairing agent
+        and raises, and a macOS host bonds on its own. Those cases must not stop
+        the connection, so a failure is logged and the link is used as-is.
+        """
+        try:
+            await client.pair()
+        except NotImplementedError:
+            _LOGGER.debug("Backend does not implement pairing; continuing unbonded")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Pairing not completed (%s); continuing unbonded", err)
+
     async def _connect(self) -> None:
         """Establish the BLE link and subscribe to notifications."""
         device = bluetooth.async_ble_device_from_address(
@@ -145,6 +165,7 @@ class MczBleTransport:
             self._name,
             disconnected_callback=_on_disconnect,
         )
+        await self._pair(client)
         service = client.services.get_service(protocol.SVC)
         if service is None:
             await client.disconnect()
