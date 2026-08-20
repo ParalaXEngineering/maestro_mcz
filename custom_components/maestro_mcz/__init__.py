@@ -16,8 +16,22 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .config_flow import CONF_POLLING_INTERVAL
-from .const import DEFAULT_POLLING_INTERVAL, DOMAIN, MOCKED_FOLDER
+from .const import (
+    CONF_MAC,
+    CONF_TRANSPORT,
+    DEFAULT_POLLING_INTERVAL,
+    DOMAIN,
+    MOCKED_FOLDER,
+    TRANSPORT_BLE,
+    TRANSPORT_CLOUD,
+    TRANSPORT_HYBRID,
+)
 from .maestro import MaestroStove
+from .maestro.ble import (
+    MaestroBleController,
+    MaestroHybridController,
+    MczBleTransport,
+)
 from .maestro.controller.controller_interface import MaestroControllerInterface
 from .maestro.controller.maestro_controller import (
     MaestroAuthenticationException,
@@ -74,15 +88,28 @@ async def async_setup_entry(
 
     # 2. Create the api / controller to use for the coordinator
     #    if mocked_folder is not None it means we want to use mocked data instead of connecting to the real API
-    if mocked_folder is None:
-        session = async_get_clientsession(hass)
-        maestroapi: MaestroControllerInterface = MaestroController(
-            session,
-            entry.data[CONF_USERNAME],
-            entry.data[CONF_PASSWORD],
-        )
-    else:
+    if mocked_folder is not None:
         maestroapi: MaestroControllerInterface = MockedController(mocked_folder)
+    else:
+        transport_mode = entry.data.get(CONF_TRANSPORT, TRANSPORT_CLOUD)
+        if transport_mode == TRANSPORT_BLE:
+            maestroapi = MaestroBleController(hass, entry.data[CONF_MAC], entry.title)
+        elif transport_mode == TRANSPORT_HYBRID:
+            session = async_get_clientsession(hass)
+            cloud_controller = MaestroController(
+                session,
+                entry.data[CONF_USERNAME],
+                entry.data[CONF_PASSWORD],
+            )
+            transport = MczBleTransport(hass, entry.data[CONF_MAC], entry.title)
+            maestroapi = MaestroHybridController(hass, cloud_controller, transport)
+        else:
+            session = async_get_clientsession(hass)
+            maestroapi = MaestroController(
+                session,
+                entry.data[CONF_USERNAME],
+                entry.data[CONF_PASSWORD],
+            )
 
     # 3. Get all stoves stove linked to the account
     try:
@@ -110,6 +137,11 @@ async def async_setup_entry(
 
     # 6. Add an update listener to handle options updates
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    # 6b. Tear down the BLE link (if any) when the entry unloads
+    transport = getattr(maestroapi, "transport", None)
+    if transport is not None:
+        entry.async_on_unload(transport.disconnect)
 
     # 7. Set up all platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

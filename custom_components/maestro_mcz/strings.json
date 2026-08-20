@@ -1,10 +1,40 @@
 {
   "config": {
+    "flow_title": "{name}",
     "step": {
       "user": {
+        "title": "MCZ Maestro",
+        "description": "Choose how to connect to the stove.",
+        "menu_options": {
+          "cloud": "Cloud (MCZ Maestro account)",
+          "bluetooth_pick": "Bluetooth (local)",
+          "hybrid": "Hybrid (cloud + local Bluetooth)"
+        }
+      },
+      "cloud": {
         "data": {
           "username": "[%key:common::config_flow::data::username%]",
           "password": "[%key:common::config_flow::data::password%]"
+        }
+      },
+      "bluetooth_pick": {
+        "title": "Select the stove",
+        "description": "Pick the MCZ panel to connect to over Bluetooth.",
+        "data": {
+          "mac": "Bluetooth device"
+        }
+      },
+      "pairing": {
+        "title": "Put the stove in pairing mode",
+        "description": "Set the display in pairing mode before continuing: press + and − together, or cut the mains power for a few seconds (after reboot the display is also in pairing mode). Then submit to finish."
+      },
+      "hybrid": {
+        "title": "Hybrid (cloud + Bluetooth)",
+        "description": "Enter your MCZ Maestro account and select the local Bluetooth panel.",
+        "data": {
+          "username": "[%key:common::config_flow::data::username%]",
+          "password": "[%key:common::config_flow::data::password%]",
+          "mac": "Bluetooth device"
         }
       }
     },
@@ -14,7 +44,8 @@
       "unknown": "[%key:common::config_flow::error::unknown%]"
     },
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "no_devices_found": "No MCZ panels were found. Put the display in pairing mode (press + and − together, or power-cycle the stove) and make sure it is in range of a Bluetooth adapter or proxy."
     }
   },
   "options": {

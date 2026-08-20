@@ -6,11 +6,20 @@
     "@Robbe-B"
   ],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/Robbe-B/maestro_mcz",
   "integration_type": "hub",
-  "iot_class": "cloud_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/Robbe-B/maestro_mcz/issues",
-  "requirements": [],
+  "bluetooth": [
+    {
+      "local_name": "MCZ_EP*"
+    }
+  ],
+  "requirements": [
+    "bleak-retry-connector>=3.5.0"
+  ],
   "version": "1.0.3"
 }

@@ -123,7 +123,7 @@ class MaestroStove:
             await self._ping()
             # if the ping is successful and we are authenticated, we can proceed to refresh the status and state
             self._is_integration_connected_to_cloud = self._controller.is_authenticated
-        except MaestroAuthenticationException, MaestroConnectionException:
+        except (MaestroAuthenticationException, MaestroConnectionException):
             # First set connection state before raising the exception to make sure that the state is updated
             self._is_integration_connected_to_cloud = False
             raise
